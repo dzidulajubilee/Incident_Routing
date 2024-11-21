@@ -9,7 +9,7 @@ from thehive4py.api import TheHiveApi
 from thehive4py.models import Alert, AlertArtifact, Case
 
 # Global configuration
-alert_lvl_threshold = 7  # Alerts for rules 7 Above
+alert_lvl_threshold = 0  # Alerts for rules 0 and above
 case_lvl_threshold = 11  # Cases for rules 11 or greater
 suricata_lvl_threshold = 3
 
@@ -27,7 +27,8 @@ if info_enabled:
     logger.setLevel(logging.INFO)
 if debug_enabled:
     logger.setLevel(logging.DEBUG)
-# create the logging file handler
+
+# Create the logging file handler
 fh = logging.FileHandler(log_file)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 fh.setFormatter(formatter)
@@ -57,8 +58,12 @@ def main(args):
         logger.debug('Search artifacts')
         artifacts_dict = artifact_detect(formatted_alert)
 
+        logger.debug('Determine alert severity')
         severity = get_alert_severity(w_alert)
-        alert = generate_alert(formatted_alert, artifacts_dict, w_alert)
+        logger.debug(f"Calculated Severity: {severity}")
+
+        alert = generate_alert(formatted_alert, artifacts_dict, w_alert, severity)
+        logger.debug(f"Generated Alert: {alert}")
 
         logger.debug('Threshold filtering')
         if should_create_alert(w_alert):
@@ -108,7 +113,7 @@ def artifact_detect(format_alt):
     return artifacts_dict
 
 
-def generate_alert(format_alt, artifacts_dict, w_alert):
+def generate_alert(format_alt, artifacts_dict, w_alert, severity):
     sourceRef = str(uuid.uuid4())[:6]
     artifacts = [AlertArtifact(dataType=key, data=val) for key, values in artifacts_dict.items() for val in values]
 
@@ -116,6 +121,8 @@ def generate_alert(format_alt, artifacts_dict, w_alert):
         w_alert['agent'] = {'id': 'no agent id', 'name': 'no agent name', 'ip': 'no agent ip'}
     else:
         w_alert['agent'].setdefault('ip', 'no agent ip')
+
+    logger.debug(f"Assigned Severity to Alert: {severity}")
 
     return Alert(
         title=w_alert['rule']['description'],
@@ -131,7 +138,8 @@ def generate_alert(format_alt, artifacts_dict, w_alert):
         type='wazuh_alert',
         source='wazuh',
         sourceRef=sourceRef,
-        artifacts=artifacts
+        artifacts=artifacts,
+        severity=int(severity)  # Include severity in alert
     )
 
 
@@ -149,9 +157,22 @@ def should_create_case(w_alert):
 
 
 def get_alert_severity(w_alert):
-    if 'data' in w_alert and 'alert' in w_alert['data']:
-        return w_alert['data']['alert'].get('severity', '2')  # Default to '2' if not found
-    return w_alert['rule'].get('level', '2')  # Default to '2' if not found
+    try:
+        level = int(w_alert['rule']['level'])
+        logger.debug(f"rule.level: {level}")
+        if 0 <= level <= 7:
+            return 1
+        elif 8 <= level <= 11:
+            return 2
+        elif 12 <= level <= 15:
+            return 3
+        elif level > 15:
+            return 4
+        else:
+            return 2  # Default if level is somehow invalid
+    except KeyError:
+        logger.error("rule.level not found in the alert data")
+        return 2  # Default to 2 if level is missing
 
 
 def send_alert(alert, thive_api):
@@ -190,5 +211,6 @@ if __name__ == "__main__":
         main(sys.argv)
     except Exception as e:
         logger.exception('Error: %s', e)
+
 
 
