@@ -1,0 +1,6 @@
+thehive4py==1.8.2
+
+if Wazuh is installed on Ubuntu 24.04 make sure libmagic is installed ;
+
+apt install libmagic1
+apt install python3-full
