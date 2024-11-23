@@ -16,7 +16,7 @@ sudo /var/ossec/framework/python/bin/pip3 install thehive4py
 On your Wazuh Server, Clone this repo on your wazuh server
 
 ```
-git clone https://github.com/dzidulajubilee/Wazuh-TheHive---Incident-Routing.git
+git clone https://github.com/dzidulajubilee/Incident_Routing.git
 ```
 
 # STEP 3  - Navigate into the cloned repo and copy the necessary files into Wazuh's Integration Directory 
