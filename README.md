@@ -65,4 +65,12 @@ You should see alerts being generated under the `Alerts` and `Cases` being creat
 ***REFERENCES***<br>
 [Using Wazuh and TheHive for threat protection and incident response](https://wazuh.com/blog/using-wazuh-and-thehive-for-threat-protection-and-incident-response/) <br>
 
+
+
+# Alerts
+![Wazuh-Alert](https://github.com/user-attachments/assets/2a80de0a-3228-4439-8bbe-edf9472a4afc)
+
+# Cases
+![Wazuh - Case](https://github.com/user-attachments/assets/d84d4232-6339-4827-bd5a-3a9a0ef173bf)
+
  
