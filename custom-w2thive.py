@@ -1,155 +1,174 @@
 #!/var/ossec/framework/python/bin/python3
+"""Wazuh -> TheHive integration (TheHive public API v1, TheHive 5.x and 6.x).
+
+Called by Wazuh as: custom-w2thive <alert_file> <api_key> <hook_url>
+"""
 import json
-import sys
+import logging
 import os
 import re
-import logging
-import uuid
-from thehive4py.api import TheHiveApi
-from thehive4py.models import Alert, AlertArtifact, Case
+import sys
+
+import requests
 
 # Global configuration
-alert_lvl_threshold = 0  # Alerts for rules 0 and above
-case_lvl_threshold = 11  # Cases for rules 11 or greater
-suricata_lvl_threshold = 3
+alert_lvl_threshold = 0      # Alerts for rule level 0 and above
+case_lvl_threshold = 11      # Cases for rule level 11 and above
+suricata_lvl_threshold = 3   # Suricata alerts with severity 1..3 (1 = highest)
+
+verify_tls = True            # Set to False (or a CA bundle path) for self-signed TheHive certificates
+request_timeout = 30
 
 debug_enabled = False
 info_enabled = True
 
-# Set paths and logging configuration
+# Logging
 pwd = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 log_file = '{0}/logs/integrations.log'.format(pwd)
-logger = logging.getLogger(__name__)
-
-# Set logging level based on user configuration
-logger.setLevel(logging.WARNING)
-if info_enabled:
-    logger.setLevel(logging.INFO)
-if debug_enabled:
-    logger.setLevel(logging.DEBUG)
-
-# Create the logging file handler
+logger = logging.getLogger('custom-w2thive')
+logger.setLevel(logging.DEBUG if debug_enabled else logging.INFO if info_enabled else logging.WARNING)
 fh = logging.FileHandler(log_file)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-fh.setFormatter(formatter)
+fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
 logger.addHandler(fh)
 
 
+class TheHive:
+    """Minimal client for TheHive API v1."""
+
+    def __init__(self, url, api_key):
+        self.url = url.rstrip('/')
+        self.session = requests.Session()
+        self.session.headers.update({
+            'Authorization': 'Bearer ' + api_key,
+            'Content-Type': 'application/json',
+        })
+        self.session.verify = verify_tls
+
+    def post(self, path, payload=None):
+        response = self.session.post(self.url + path, json=payload or {}, timeout=request_timeout)
+        if response.status_code not in (200, 201):
+            raise RuntimeError('POST {} failed: {} {}'.format(path, response.status_code, response.text))
+        return response.json()
+
+    def create_alert(self, alert):
+        return self.post('/api/v1/alert', alert)
+
+    def promote_alert(self, alert_id, case_fields):
+        return self.post('/api/v1/alert/{}/case'.format(alert_id), case_fields)
+
+    def create_case(self, case):
+        return self.post('/api/v1/case', case)
+
+
 def main(args):
-    try:
-        logger.debug('Start main')
-        logger.debug('Get alert file location')
-        alert_file_location = args[1]
-        logger.debug('Get TheHive URL')
-        thive_url = args[3]
-        logger.debug('Get TheHive API key')
-        thive_api_key = args[2]
-        thive_api = TheHiveApi(thive_url, thive_api_key)
+    alert_file_location = args[1]
+    api_key = args[2]
+    hive_url = args[3]
+    hive = TheHive(hive_url, api_key)
 
-        logger.debug('Open alert file')
-        w_alert = json.load(open(alert_file_location))
-        logger.debug('Alert data')
-        logger.debug(str(w_alert))
+    with open(alert_file_location) as f:
+        w_alert = json.load(f)
+    logger.debug('Alert data: %s', w_alert)
 
-        logger.debug('Generate JSON to dot-key-text')
-        alt = pr(w_alert, '', [])
-        logger.debug('Formatting description')
-        formatted_alert = md_format(alt)
-        logger.debug('Search artifacts')
-        artifacts_dict = artifact_detect(formatted_alert)
+    pairs = flatten(w_alert)
+    description = md_format(pairs)
+    observables = detect_observables('\n'.join(str(value) for _, value in pairs))
+    severity = get_alert_severity(w_alert)
+    alert = generate_alert(description, observables, w_alert, severity)
+    logger.debug('Generated alert: %s', alert)
 
-        logger.debug('Determine alert severity')
-        severity = get_alert_severity(w_alert)
-        logger.debug(f"Calculated Severity: {severity}")
+    alert_id = None
+    if should_create_alert(w_alert):
+        created = hive.create_alert(alert)
+        alert_id = created['_id']
+        logger.info('Created TheHive alert: %s', alert_id)
 
-        alert = generate_alert(formatted_alert, artifacts_dict, w_alert, severity)
-        logger.debug(f"Generated Alert: {alert}")
+    if should_create_case(w_alert):
+        case_fields = {
+            'title': 'Case related to Alert: ' + alert['title'],
+            'tags': ['wazuh', 'alert_case'],
+        }
+        if alert_id:
+            # Promote the alert so the case keeps its observables and stays linked to it
+            case = hive.promote_alert(alert_id, case_fields)
+        else:
+            case = hive.create_case(dict(
+                case_fields,
+                description='Case created from Wazuh alert {}\n\n{}'.format(alert['sourceRef'], description),
+                severity=severity, tlp=alert['tlp'], pap=alert['pap'],
+            ))
+        logger.info('Created TheHive case: %s', case['_id'])
 
-        logger.debug('Threshold filtering')
-        if should_create_alert(w_alert):
-            send_alert(alert, thive_api)
 
-        if should_create_case(w_alert):
-            create_case(alert, thive_api, severity)
-
-    except Exception as e:
-        logger.exception('Error in main: %s', e)
-
-
-def pr(data, prefix, alt):
+def flatten(data, prefix='', out=None):
+    """Turn nested JSON into ('a.b.c', value) pairs."""
+    out = [] if out is None else out
     for key, value in data.items():
+        path = '{}.{}'.format(prefix, key) if prefix else str(key)
         if isinstance(value, dict):
-            pr(value, prefix + '.' + str(key), alt)
+            flatten(value, path, out)
         else:
-            alt.append((prefix + '.' + str(key) + '|||' + str(value)))
-    return alt
+            out.append((path, value))
+    return out
 
 
-def md_format(alt, format_alt=''):
-    md_title_dict = {}
-    for now in alt:
-        now = now[1:]
-        dot = now.split('|||')[0].find('.')
-        if dot == -1:
-            md_title_dict[now.split('|||')[0]] = [now]
-        else:
-            if now[0:dot] in md_title_dict.keys():
-                (md_title_dict[now[0:dot]]).append(now)
-            else:
-                md_title_dict[now[0:dot]] = [now]
-    for now in md_title_dict.keys():
-        format_alt += '### ' + now.capitalize() + '\n' + '| key | val |\n| ------ | ------ |\n'
-        for let in md_title_dict[now]:
-            key, val = let.split('|||')[0], let.split('|||')[1]
-            format_alt += '| **' + key + '** | ' + val + ' |\n'
-    return format_alt
+def md_format(pairs):
+    sections = {}
+    for key, value in pairs:
+        sections.setdefault(key.split('.')[0], []).append((key, value))
+    text = ''
+    for section, rows in sections.items():
+        text += '### {}\n| key | val |\n| ------ | ------ |\n'.format(section.capitalize())
+        for key, value in rows:
+            text += '| **{}** | {} |\n'.format(key, str(value).replace('|', '\\|').replace('\n', ' '))
+    return text
 
 
-def artifact_detect(format_alt):
-    artifacts_dict = {}
-    artifacts_dict['ip'] = re.findall(r'\d+\.\d+\.\d+\.\d+', format_alt)
-    artifacts_dict['url'] = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', format_alt)
-    artifacts_dict['domain'] = [now.split('//')[1].split('/')[0] for now in artifacts_dict['url']]
-    return artifacts_dict
+def detect_observables(text):
+    ips = re.findall(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', text)
+    urls = re.findall(r'https?://[^\s)<>"\']+', text)
+    domains = [u.split('//', 1)[1].split('/', 1)[0].split(':', 1)[0] for u in urls]
+    observables, seen = [], set()
+    for data_type, values in (('ip', ips), ('url', urls), ('domain', domains)):
+        for value in values:
+            if (data_type, value) not in seen:
+                seen.add((data_type, value))
+                observables.append({'dataType': data_type, 'data': value})
+    return observables
 
 
-def generate_alert(format_alt, artifacts_dict, w_alert, severity):
-    sourceRef = str(uuid.uuid4())[:6]
-    artifacts = [AlertArtifact(dataType=key, data=val) for key, values in artifacts_dict.items() for val in values]
+def generate_alert(description, observables, w_alert, severity):
+    agent = w_alert.setdefault('agent', {'id': 'no agent id', 'name': 'no agent name'})
+    agent.setdefault('ip', 'no agent ip')
+    rule = w_alert['rule']
+    # Wazuh's alert id is unique per event; fall back to timestamp + rule id
+    source_ref = str(w_alert.get('id') or '{}-{}'.format(w_alert.get('timestamp', ''), rule['id']))
 
-    if 'agent' not in w_alert:
-        w_alert['agent'] = {'id': 'no agent id', 'name': 'no agent name', 'ip': 'no agent ip'}
-    else:
-        w_alert['agent'].setdefault('ip', 'no agent ip')
-
-    logger.debug(f"Assigned Severity to Alert: {severity}")
-
-    return Alert(
-        title=w_alert['rule']['description'],
-        tlp=2,
-        tags=[
+    return {
+        'type': 'wazuh_alert',
+        'source': 'wazuh',
+        'sourceRef': source_ref,
+        'title': rule['description'],
+        'description': description,
+        'severity': severity,
+        'tlp': 2,
+        'pap': 2,
+        'tags': [
             'wazuh',
-            'rule=' + w_alert['rule']['id'],
-            'agent_name=' + w_alert['agent']['name'],
-            'agent_id=' + w_alert['agent']['id'],
-            'agent_ip=' + w_alert['agent']['ip']
+            'rule=' + str(rule['id']),
+            'agent_name=' + str(agent.get('name', 'no agent name')),
+            'agent_id=' + str(agent.get('id', 'no agent id')),
+            'agent_ip=' + str(agent['ip']),
         ],
-        description=format_alt,
-        type='wazuh_alert',
-        source='wazuh',
-        sourceRef=sourceRef,
-        artifacts=artifacts,
-        severity=int(severity)  # Include severity in alert
-    )
+        'observables': observables,
+    }
 
 
 def should_create_alert(w_alert):
-    if w_alert['rule']['groups'] == ['ids', 'suricata']:
-        if 'data' in w_alert and 'alert' in w_alert['data']:
-            return int(w_alert['data']['alert']['severity']) <= suricata_lvl_threshold
-    else:
-        return int(w_alert['rule']['level']) >= alert_lvl_threshold
-    return False
+    if w_alert['rule'].get('groups') == ['ids', 'suricata']:
+        suricata = w_alert.get('data', {}).get('alert', {})
+        return 'severity' in suricata and int(suricata['severity']) <= suricata_lvl_threshold
+    return int(w_alert['rule']['level']) >= alert_lvl_threshold
 
 
 def should_create_case(w_alert):
@@ -157,60 +176,24 @@ def should_create_case(w_alert):
 
 
 def get_alert_severity(w_alert):
+    """Map Wazuh rule level to TheHive severity (1 low, 2 medium, 3 high, 4 critical)."""
     try:
         level = int(w_alert['rule']['level'])
-        logger.debug(f"rule.level: {level}")
-        if 0 <= level <= 7:
-            return 1
-        elif 8 <= level <= 11:
-            return 2
-        elif 12 <= level <= 15:
-            return 3
-        elif level > 15:
-            return 4
-        else:
-            return 2  # Default if level is somehow invalid
-    except KeyError:
-        logger.error("rule.level not found in the alert data")
-        return 2  # Default to 2 if level is missing
+    except (KeyError, ValueError):
+        logger.error('rule.level not found in the alert data')
+        return 2
+    if level <= 7:
+        return 1
+    if level <= 11:
+        return 2
+    if level <= 15:
+        return 3
+    return 4
 
 
-def send_alert(alert, thive_api):
-    response = thive_api.create_alert(alert)
-    if response.status_code == 201:
-        logger.info('Created TheHive alert: ' + str(response.json()['id']))
-    else:
-        logger.error('Error creating TheHive alert: {}/{}'.format(response.status_code, response.text))
-
-
-def create_case(alert, thive_api, severity):
-    case_title = f"Case related to Alert: {alert.title}"
-    case_description = f"Case created based on alert with ID: {alert.sourceRef}\n\nAlert details:\n{alert.description}"
-
-    case = Case(
-        title=case_title,
-        description=case_description,
-        tlp=2,  # Adjust TLP as needed
-        tags=['wazuh', 'alert_case'],
-        severity=int(severity),  # Ensure severity is an integer
-        status='Open',  # You can set other statuses like 'In Progress' based on your workflow
-        source='wazuh'
-    )
-
-    response = thive_api.create_case(case)
-    if response.status_code == 201:
-        logger.info('Created TheHive case: ' + str(response.json()['id']))
-    else:
-        logger.error('Error creating TheHive case: {}/{}'.format(response.status_code, response.text))
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
-        if debug_enabled:
-            logger.debug('Debug mode')
         main(sys.argv)
     except Exception as e:
         logger.exception('Error: %s', e)
-
-
-
+        sys.exit(1)

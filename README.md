@@ -1,15 +1,19 @@
 # Wazuh + TheHive ---- Incident-Routing
 This integration between TheHive and Wazuh enhances incident management by automatically routing alerts based on severity.  This integration helps security teams prioritize and manage incidents efficiently.
 
-Tested on Thehive 5.3 and Wazuh 4.9.2 
+Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case threshold are promoted to a linked case.
+
+> Still on the deprecated API v0 / `thehive4py` 1.8.2? Use release [v1.0.0](https://github.com/dzidulajubilee/Incident_Routing/releases/tag/v1.0.0).
 
 # STEP 1 
 
-On your Wazuh Server, Install The Hive Python module 
+The script only needs `requests`, which ships with Wazuh's bundled Python. If it is missing:
 
 ```
-sudo /var/ossec/framework/python/bin/pip3 install thehive4py
+sudo /var/ossec/framework/python/bin/pip3 install requests
 ```
+
+`thehive4py` and `libmagic` are no longer needed.
 
 # STEP 2 
 
@@ -36,14 +40,14 @@ cp  custom-w2thive.py /var/ossec/integrations/
 chmod 755 /var/ossec/integrations/custom-w2thive
 chmod 755 /var/ossec/integrations/custom-w2thive.py
 
-chown root:wazuh /var/ossec/integrations/custom-w2thive.py
+chown root:wazuh /var/ossec/integrations/custom-w2thive
 chown root:wazuh /var/ossec/integrations/custom-w2thive.py
 
 ```
 
 # STEP5 - Final integration step - enabling the integration in the Wazuh manager configuration file  <br>
 
-Modify `/var/ossec/etc/ossec.conf` and insert the below code. You will need to insert the IP address for your The Hive server inside the `<hook_url>` tags as well as insert your API key inside the `<api_key>` tags. 
+Modify `/var/ossec/etc/ossec.conf` and insert the below code. You will need to insert the IP address for your The Hive server inside the `<hook_url>` tags as well as insert your API key inside the `<api_key>` tags. Use an API key of a TheHive user with the `analyst` profile (needs `manageAlert` and `manageCase`). For HTTPS with a self-signed certificate, set `verify_tls` at the top of `custom-w2thive.py` to your CA bundle path. 
 
 Place Below the Global Tag
 
