@@ -47,6 +47,9 @@ class TheHive:
             'Content-Type': 'application/json',
         })
         self.session.verify = verify_tls
+        if verify_tls is False:
+            # Self-signed lab certificate: skip the per-request warning
+            requests.packages.urllib3.disable_warnings()
 
     def post(self, path, payload=None):
         response = self.session.post(self.url + path, json=payload or {}, timeout=request_timeout)

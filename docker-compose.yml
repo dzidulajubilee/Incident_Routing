@@ -1,9 +1,11 @@
 # TheHive 6 + Cortex 4 lab stack
-# 1. cp .env.example .env and set THEHIVE_SECRET (openssl rand -hex 32)
-# 2. sudo sysctl -w vm.max_map_count=262144
-# 3. docker compose up -d
-# TheHive: http://<host>:9000  (admin@thehive.local / secret - change it)
-# Cortex:  http://<host>:9001  (create the admin account on first visit)
+# 1. cp .env.example .env and set THEHIVE_SECRET (openssl rand -hex 32) and SERVER_NAME
+# 2. ./nginx/gen-selfsigned.sh <SERVER_NAME>   (or put your own server.crt/server.key in nginx/certs/)
+# 3. sudo sysctl -w vm.max_map_count=262144
+# 4. docker compose up -d
+# TheHive: https://<SERVER_NAME>       (admin@thehive.local / secret - change it)
+# Cortex:  https://<SERVER_NAME>:9443  (create the admin account on first visit)
+# TheHive and Cortex are only reachable through nginx.
 
 services:
   thehive:
@@ -14,8 +16,6 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
-    ports:
-      - "0.0.0.0:9000:9000"
     environment:
       - JAVA_OPTS=-Xms1280M -Xmx1280M -XX:MaxMetaspaceSize=400m -XX:ReservedCodeCacheSize=250m
     command:
@@ -101,8 +101,24 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/cortex-jobs:/tmp/cortex-jobs
       - cortexlogs:/var/log/cortex
+    networks:
+      - SOC_NET
+
+  nginx:
+    image: nginx:${NGINX_VERSION:-1.31.9}
+    restart: unless-stopped
+    depends_on:
+      - thehive
+      - cortex
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-localhost}
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
     ports:
-      - "0.0.0.0:9001:9001"
+      - "0.0.0.0:80:80"
+      - "0.0.0.0:443:443"
+      - "0.0.0.0:9443:9443"
     networks:
       - SOC_NET
 
