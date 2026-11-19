@@ -39,7 +39,9 @@ services:
       - elasticsearch
       - --storage-directory
       - /data/files
-      # After creating a Cortex org + user for TheHive, add its API key to .env and uncomment:
+      # After creating a Cortex org + user for TheHive, add its API key to .env,
+      # remove --no-config-cortex and uncomment the four lines below:
+      - --no-config-cortex
       # - --cortex-hostnames
       # - cortex
       # - --cortex-keys
@@ -47,7 +49,7 @@ services:
     volumes:
       - thehivedata:/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/status || exit 1"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/v1/status/public || exit 1"]
       start_period: 300s
       interval: 10s
       timeout: 5s

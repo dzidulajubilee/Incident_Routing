@@ -66,13 +66,15 @@ services:
         set -- --secret "$$SECRET" --cql-hostnames cassandra --index-backend elasticsearch --es-hostnames elasticsearch --storage-directory /data/files
         if [ -n "$$CORTEX_API_KEY" ]; then
           set -- "$$@" --cortex-hostnames cortex --cortex-keys "$$CORTEX_API_KEY"
+        else
+          set -- "$$@" --no-config-cortex
         fi
         exec /opt/thehive/entrypoint "$$@"
     volumes:
       - thehivedata:/data
       - secrets:/secrets:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/status || exit 1"]
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/v1/status/public || exit 1"]
       start_period: 300s
       interval: 10s
       timeout: 5s
