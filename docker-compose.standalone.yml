@@ -188,6 +188,7 @@ configs:
           http2 on;
           server_name _;
 
+          resolver 127.0.0.11 valid=10s ipv6=off;
           ssl_certificate     /etc/nginx/certs/server.crt;
           ssl_certificate_key /etc/nginx/certs/server.key;
           ssl_protocols       TLSv1.2 TLSv1.3;
@@ -200,7 +201,8 @@ configs:
           proxy_send_timeout 600;
 
           location / {
-              proxy_pass http://thehive:9000;
+              set $$thehive_upstream http://thehive:9000;
+              proxy_pass $$thehive_upstream;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
@@ -215,6 +217,7 @@ configs:
           http2 on;
           server_name _;
 
+          resolver 127.0.0.11 valid=10s ipv6=off;
           ssl_certificate     /etc/nginx/certs/server.crt;
           ssl_certificate_key /etc/nginx/certs/server.key;
           ssl_protocols       TLSv1.2 TLSv1.3;
@@ -224,7 +227,8 @@ configs:
           proxy_read_timeout 600;
 
           location / {
-              proxy_pass http://cortex:9001;
+              set $$cortex_upstream http://cortex:9001;
+              proxy_pass $$cortex_upstream;
               proxy_http_version 1.1;
               proxy_set_header Host $$host;
               proxy_set_header X-Real-IP $$remote_addr;
