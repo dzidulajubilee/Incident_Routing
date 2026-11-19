@@ -59,7 +59,7 @@ chown root:wazuh /var/ossec/integrations/custom-w2thive.py
 
 # STEP5 - Final integration step - enabling the integration in the Wazuh manager configuration file  <br>
 
-Modify `/var/ossec/etc/ossec.conf` and insert the below code. You will need to insert the IP address for your The Hive server inside the `<hook_url>` tags as well as insert your API key inside the `<api_key>` tags. Use an API key of a TheHive user with the `analyst` profile (needs `manageAlert` and `manageCase`). For HTTPS with a self-signed certificate, set `verify_tls` at the top of `custom-w2thive.py` to your CA bundle path. 
+Modify `/var/ossec/etc/ossec.conf` and insert the below code. You will need to insert the IP address for your The Hive server inside the `<hook_url>` tags as well as insert your API key inside the `<api_key>` tags. Use an API key of a TheHive user with the `analyst` profile (needs `manageAlert` and `manageCase`). To give new cases a specific status, set `case_status` at the top of `custom-w2thive.py` (for example `'InProgress'` or a custom status); leave it as `None` to use TheHive's default. For HTTPS with a self-signed certificate, set `verify_tls` at the top of `custom-w2thive.py` to your CA bundle path. 
 
 Place Below the Global Tag
 

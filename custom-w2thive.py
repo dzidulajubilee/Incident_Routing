@@ -16,6 +16,10 @@ alert_lvl_threshold = 0      # Alerts for rule level 0 and above
 case_lvl_threshold = 11      # Cases for rule level 11 and above
 suricata_lvl_threshold = 3   # Suricata alerts with severity 1..3 (1 = highest)
 
+# Status for new cases, e.g. 'New' or 'InProgress' (or a custom status name).
+# None = let TheHive apply its default. Must be a case status that exists in TheHive.
+case_status = None
+
 verify_tls = True            # Set to False (or a CA bundle path) for self-signed TheHive certificates
 request_timeout = 30
 
@@ -59,6 +63,11 @@ class TheHive:
     def create_case(self, case):
         return self.post('/api/v1/case', case)
 
+    def update_case(self, case_id, fields):
+        response = self.session.patch('{}/api/v1/case/{}'.format(self.url, case_id), json=fields, timeout=request_timeout)
+        if not response.ok:
+            raise RuntimeError('PATCH case {} failed: {} {}'.format(case_id, response.status_code, response.text))
+
 
 def main(args):
     alert_file_location = args[1]
@@ -91,13 +100,20 @@ def main(args):
         if alert_id:
             # Promote the alert so the case keeps its observables and stays linked to it
             case = hive.promote_alert(alert_id, case_fields)
+            logger.info('Created TheHive case: %s', case['_id'])
+            if case_status:
+                hive.update_case(case['_id'], {'status': case_status})
+                logger.info('Set case %s status to %s', case['_id'], case_status)
         else:
-            case = hive.create_case(dict(
+            new_case = dict(
                 case_fields,
                 description='Case created from Wazuh alert {}\n\n{}'.format(alert['sourceRef'], description),
                 severity=severity, tlp=alert['tlp'], pap=alert['pap'],
-            ))
-        logger.info('Created TheHive case: %s', case['_id'])
+            )
+            if case_status:
+                new_case['status'] = case_status
+            case = hive.create_case(new_case)
+            logger.info('Created TheHive case: %s', case['_id'])
 
 
 def flatten(data, prefix='', out=None):
