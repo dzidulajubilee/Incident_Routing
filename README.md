@@ -7,24 +7,39 @@ Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case th
 
 # Lab stack (optional)
 
-`docker-compose.yml` runs TheHive 6.0, Cassandra 4.1, Elasticsearch 8.19 and Cortex 4.2 behind nginx with HTTPS. It is self-contained: no `.env` and no extra files are needed (Docker Compose v2.23.1+).
+Two compose files run the same stack: TheHive 6.0, Cassandra 4.1, Elasticsearch 8.19 and Cortex 4.2 behind nginx with HTTPS. TheHive is at `https://<host>` (default login `admin@thehive.local` / `secret`, change it), Cortex at `https://<host>:9443`. Ports 9000/9001 are not published.
+
+Before either one: `sudo sysctl -w vm.max_map_count=262144`
+
+### Option A - `docker-compose.yml` (uses `.env` and the `nginx/` directory)
+
+Settings and certificates are files you can see and edit.
 
 ```
-sudo sysctl -w vm.max_map_count=262144
+cp .env.example .env                            # set THEHIVE_SECRET (openssl rand -hex 32) and SERVER_NAME
+./nginx/gen-selfsigned.sh thehive.example.com   # or copy your own server.crt / server.key into nginx/certs/
 docker compose up -d
 ```
 
-On first start, a one-shot `init` container creates a random TheHive secret and a self-signed certificate, kept in Docker volumes. TheHive is at `https://<host>` (default login `admin@thehive.local` / `secret`, change it), Cortex at `https://<host>:9443`. Ports 9000/9001 are not published. To change the certificate name, the Cortex API key or versions, copy `.env.example` to `.env`.
+### Option B - `docker-compose.standalone.yml` (single file, no `.env` needed)
 
-To use your own certificate:
+Copy just this file anywhere and run it (Docker Compose v2.23.1+):
 
 ```
-docker compose cp server.crt nginx:/etc/nginx/certs/server.crt
-docker compose cp server.key nginx:/etc/nginx/certs/server.key
-docker compose restart nginx
+docker compose -f docker-compose.standalone.yml up -d
 ```
 
-With this stack, use `https://<host>` as the `<hook_url>` in STEP 5. With the self-signed certificate, set `verify_tls = False` in `custom-w2thive.py` (lab only).
+On first start, a one-shot `init` container creates a random TheHive secret and a self-signed certificate, kept in Docker volumes. The nginx config is inside the file. A `.env` is optional (certificate name, Cortex API key, versions). To use your own certificate:
+
+```
+docker compose -f docker-compose.standalone.yml cp server.crt nginx:/etc/nginx/certs/server.crt
+docker compose -f docker-compose.standalone.yml cp server.key nginx:/etc/nginx/certs/server.key
+docker compose -f docker-compose.standalone.yml restart nginx
+```
+
+### Wazuh with either option
+
+Use `https://<host>` as the `<hook_url>` in STEP 5. With the self-signed certificate, set `verify_tls = False` in `custom-w2thive.py` (lab only), or copy the certificate to the Wazuh manager and set `verify_tls` to its path.
 
 # STEP 1 
 
