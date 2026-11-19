@@ -7,18 +7,24 @@ Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case th
 
 # Lab stack (optional)
 
-`docker-compose.yml` runs TheHive 6.0, Cassandra 4.1, Elasticsearch 8.19 and Cortex 4.2:
+`docker-compose.yml` runs TheHive 6.0, Cassandra 4.1, Elasticsearch 8.19 and Cortex 4.2 behind nginx with HTTPS. It is self-contained: no `.env` and no extra files are needed (Docker Compose v2.23.1+).
 
 ```
-cp .env.example .env                       # set THEHIVE_SECRET (openssl rand -hex 32) and SERVER_NAME
-./nginx/gen-selfsigned.sh thehive.example.com   # or copy your own server.crt / server.key into nginx/certs/
 sudo sysctl -w vm.max_map_count=262144
 docker compose up -d
 ```
 
-Nginx terminates HTTPS: TheHive at `https://<SERVER_NAME>` (default login `admin@thehive.local` / `secret`, change it), Cortex at `https://<SERVER_NAME>:9443`. Ports 9000/9001 are not published. Attachments are stored on a local volume (MinIO is no longer used).
+On first start, a one-shot `init` container creates a random TheHive secret and a self-signed certificate, kept in Docker volumes. TheHive is at `https://<host>` (default login `admin@thehive.local` / `secret`, change it), Cortex at `https://<host>:9443`. Ports 9000/9001 are not published. To change the certificate name, the Cortex API key or versions, copy `.env.example` to `.env`.
 
-With this stack, use `https://<SERVER_NAME>` as the `<hook_url>` in STEP 5. With the self-signed certificate, set `verify_tls = False` in `custom-w2thive.py` (lab only), or copy `nginx/certs/server.crt` to the Wazuh manager and set `verify_tls` to its path.
+To use your own certificate:
+
+```
+docker compose cp server.crt nginx:/etc/nginx/certs/server.crt
+docker compose cp server.key nginx:/etc/nginx/certs/server.key
+docker compose restart nginx
+```
+
+With this stack, use `https://<host>` as the `<hook_url>` in STEP 5. With the self-signed certificate, set `verify_tls = False` in `custom-w2thive.py` (lab only).
 
 # STEP 1 
 

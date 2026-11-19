@@ -1,39 +1,74 @@
-# TheHive 6 + Cortex 4 lab stack
-# 1. cp .env.example .env and set THEHIVE_SECRET (openssl rand -hex 32) and SERVER_NAME
-# 2. ./nginx/gen-selfsigned.sh <SERVER_NAME>   (or put your own server.crt/server.key in nginx/certs/)
-# 3. sudo sysctl -w vm.max_map_count=262144
-# 4. docker compose up -d
-# TheHive: https://<SERVER_NAME>       (admin@thehive.local / secret - change it)
-# Cortex:  https://<SERVER_NAME>:9443  (create the admin account on first visit)
-# TheHive and Cortex are only reachable through nginx.
+# TheHive 6 + Cortex 4 lab stack behind nginx (HTTPS)
+#
+# Self-contained: no .env and no extra files needed. Just:
+#   sudo sysctl -w vm.max_map_count=262144
+#   docker compose up -d
+# Needs Docker Compose v2.23.1 or later (inline configs).
+#
+# On first start, the "init" service creates a random TheHive secret and a
+# self-signed certificate, both kept in Docker volumes and reused afterwards.
+#
+# TheHive: https://<host>        (admin@thehive.local / secret - change it)
+# Cortex:  https://<host>:9443   (create the admin account on first visit)
+#
+# Optional .env settings (see .env.example): SERVER_NAME (name in the
+# self-signed certificate), CORTEX_API_KEY, THEHIVE_SECRET, image versions.
 
 services:
+  init:
+    image: alpine/openssl:3.5.8
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        if [ ! -s /secrets/thehive-secret ]; then
+          openssl rand -hex 32 > /secrets/thehive-secret
+          echo "Generated TheHive secret"
+        fi
+        chmod 644 /secrets/thehive-secret
+        if [ ! -s /certs/server.crt ] || [ ! -s /certs/server.key ]; then
+          openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
+            -keyout /certs/server.key -out /certs/server.crt \
+            -subj "/CN=$$SERVER_NAME" \
+            -addext "subjectAltName=DNS:$$SERVER_NAME,DNS:localhost"
+          chmod 600 /certs/server.key
+          echo "Generated self-signed certificate for $$SERVER_NAME"
+        fi
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-localhost}
+    volumes:
+      - secrets:/secrets
+      - certs:/certs
+
   thehive:
     image: strangebee/thehive:${THEHIVE_VERSION:-6.0.0-2}
     restart: unless-stopped
     depends_on:
+      init:
+        condition: service_completed_successfully
       cassandra:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
     environment:
       - JAVA_OPTS=-Xms1280M -Xmx1280M -XX:MaxMetaspaceSize=400m -XX:ReservedCodeCacheSize=250m
+      - THEHIVE_SECRET=${THEHIVE_SECRET:-}
+      - CORTEX_API_KEY=${CORTEX_API_KEY:-}
+    # Wraps the image entrypoint: secret from .env or from the init volume,
+    # Cortex connector only when CORTEX_API_KEY is set
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - --secret
-      - ${THEHIVE_SECRET:?Set THEHIVE_SECRET in .env}
-      - --cql-hostnames
-      - cassandra
-      - --es-hostnames
-      - elasticsearch
-      - --storage-directory
-      - /data/files
-      # After creating a Cortex org + user for TheHive, add its API key to .env and uncomment:
-      # - --cortex-hostnames
-      # - cortex
-      # - --cortex-keys
-      # - ${CORTEX_API_KEY}
+      - |
+        SECRET="$${THEHIVE_SECRET:-$$(cat /secrets/thehive-secret)}"
+        set -- --secret "$$SECRET" --cql-hostnames cassandra --es-hostnames elasticsearch --storage-directory /data/files
+        if [ -n "$$CORTEX_API_KEY" ]; then
+          set -- "$$@" --cortex-hostnames cortex --cortex-keys "$$CORTEX_API_KEY"
+        fi
+        exec /opt/thehive/entrypoint "$$@"
     volumes:
       - thehivedata:/data/files
+      - secrets:/secrets:ro
     networks:
       - SOC_NET
 
@@ -108,13 +143,19 @@ services:
     image: nginx:${NGINX_VERSION:-1.31.9}
     restart: unless-stopped
     depends_on:
-      - thehive
-      - cortex
-    environment:
-      - SERVER_NAME=${SERVER_NAME:-localhost}
+      init:
+        condition: service_completed_successfully
+      thehive:
+        condition: service_started
+      cortex:
+        condition: service_started
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/conf.d/default.conf
     volumes:
-      - ./nginx/templates:/etc/nginx/templates:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
+      # Own certificate: docker compose cp server.crt nginx:/etc/nginx/certs/server.crt
+      # (same for server.key), then docker compose restart nginx
+      - certs:/etc/nginx/certs
     ports:
       - "0.0.0.0:80:80"
       - "0.0.0.0:443:443"
@@ -122,11 +163,73 @@ services:
     networks:
       - SOC_NET
 
+configs:
+  nginx_conf:
+    content: |
+      # TheHive on 443, Cortex on 9443, port 80 redirects to HTTPS
+      server {
+          listen 80 default_server;
+          server_name _;
+          return 301 https://$$host$$request_uri;
+      }
+
+      server {
+          listen 443 ssl default_server;
+          http2 on;
+          server_name _;
+
+          ssl_certificate     /etc/nginx/certs/server.crt;
+          ssl_certificate_key /etc/nginx/certs/server.key;
+          ssl_protocols       TLSv1.2 TLSv1.3;
+          ssl_session_cache   shared:SSL:1m;
+          ssl_session_timeout 10m;
+
+          client_max_body_size 2G;
+          proxy_buffering off;
+          proxy_read_timeout 600;
+          proxy_send_timeout 600;
+
+          location / {
+              proxy_pass http://thehive:9000;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+              add_header Strict-Transport-Security "max-age=31536000" always;
+          }
+      }
+
+      server {
+          listen 9443 ssl default_server;
+          http2 on;
+          server_name _;
+
+          ssl_certificate     /etc/nginx/certs/server.crt;
+          ssl_certificate_key /etc/nginx/certs/server.key;
+          ssl_protocols       TLSv1.2 TLSv1.3;
+
+          client_max_body_size 2G;
+          proxy_buffering off;
+          proxy_read_timeout 600;
+
+          location / {
+              proxy_pass http://cortex:9001;
+              proxy_http_version 1.1;
+              proxy_set_header Host $$host;
+              proxy_set_header X-Real-IP $$remote_addr;
+              proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $$scheme;
+          }
+      }
+
 volumes:
   thehivedata:
   cassandradata:
   elasticsearchdata:
   cortexlogs:
+  secrets:
+  certs:
 
 networks:
   SOC_NET:
