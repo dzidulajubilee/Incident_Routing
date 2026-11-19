@@ -5,6 +5,18 @@ Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case th
 
 > Still on the deprecated API v0 / `thehive4py` 1.8.2? Use release [v1.0.0](https://github.com/dzidulajubilee/Incident_Routing/releases/tag/v1.0.0).
 
+# Lab stack (optional)
+
+`docker-compose.yml` runs TheHive 6.0, Cassandra 4.1, Elasticsearch 8.19 and Cortex 4.2:
+
+```
+cp .env.example .env          # set THEHIVE_SECRET (openssl rand -hex 32)
+sudo sysctl -w vm.max_map_count=262144
+docker compose up -d
+```
+
+TheHive listens on port 9000 (default login `admin@thehive.local` / `secret`, change it), Cortex on 9001. Attachments are stored on a local volume (MinIO is no longer used).
+
 # STEP 1 
 
 The script only needs `requests`, which ships with Wazuh's bundled Python. If it is missing:
