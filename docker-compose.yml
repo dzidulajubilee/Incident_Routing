@@ -8,10 +8,20 @@
 # TheHive and Cortex are only reachable through nginx.
 
 services:
+  # One-shot: gives the TheHive volume to the thehive user (uid 1000)
+  init:
+    image: alpine/openssl:3.5.8
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c", "mkdir -p /data/files && chown -R 1000:1000 /data"]
+    volumes:
+      - thehivedata:/data
+
   thehive:
     image: strangebee/thehive:${THEHIVE_VERSION:-6.0.0-2}
     restart: unless-stopped
     depends_on:
+      init:
+        condition: service_completed_successfully
       cassandra:
         condition: service_healthy
       elasticsearch:
@@ -23,6 +33,8 @@ services:
       - ${THEHIVE_SECRET:?Set THEHIVE_SECRET in .env}
       - --cql-hostnames
       - cassandra
+      - --index-backend
+      - elasticsearch
       - --es-hostnames
       - elasticsearch
       - --storage-directory
@@ -33,7 +45,13 @@ services:
       # - --cortex-keys
       # - ${CORTEX_API_KEY}
     volumes:
-      - thehivedata:/data/files
+      - thehivedata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/status || exit 1"]
+      start_period: 300s
+      interval: 10s
+      timeout: 5s
+      retries: 30
     networks:
       - SOC_NET
 
@@ -108,8 +126,10 @@ services:
     image: nginx:${NGINX_VERSION:-1.31.9}
     restart: unless-stopped
     depends_on:
-      - thehive
-      - cortex
+      thehive:
+        condition: service_healthy
+      cortex:
+        condition: service_started
     environment:
       - SERVER_NAME=${SERVER_NAME:-localhost}
     volumes:

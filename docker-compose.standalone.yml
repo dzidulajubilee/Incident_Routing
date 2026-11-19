@@ -27,6 +27,7 @@ services:
           echo "Generated TheHive secret"
         fi
         chmod 644 /secrets/thehive-secret
+        mkdir -p /data/files && chown -R 1000:1000 /data   # TheHive runs as uid 1000
         if [ ! -s /certs/server.crt ] || [ ! -s /certs/server.key ]; then
           openssl req -x509 -nodes -newkey rsa:4096 -days 825 \
             -keyout /certs/server.key -out /certs/server.crt \
@@ -40,6 +41,7 @@ services:
     volumes:
       - secrets:/secrets
       - certs:/certs
+      - thehivedata:/data
 
   thehive:
     image: strangebee/thehive:${THEHIVE_VERSION:-6.0.0-2}
@@ -61,14 +63,20 @@ services:
     command:
       - |
         SECRET="$${THEHIVE_SECRET:-$$(cat /secrets/thehive-secret)}"
-        set -- --secret "$$SECRET" --cql-hostnames cassandra --es-hostnames elasticsearch --storage-directory /data/files
+        set -- --secret "$$SECRET" --cql-hostnames cassandra --index-backend elasticsearch --es-hostnames elasticsearch --storage-directory /data/files
         if [ -n "$$CORTEX_API_KEY" ]; then
           set -- "$$@" --cortex-hostnames cortex --cortex-keys "$$CORTEX_API_KEY"
         fi
         exec /opt/thehive/entrypoint "$$@"
     volumes:
-      - thehivedata:/data/files
+      - thehivedata:/data
       - secrets:/secrets:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9000/api/status || exit 1"]
+      start_period: 300s
+      interval: 10s
+      timeout: 5s
+      retries: 30
     networks:
       - SOC_NET
 
@@ -146,7 +154,7 @@ services:
       init:
         condition: service_completed_successfully
       thehive:
-        condition: service_started
+        condition: service_healthy
       cortex:
         condition: service_started
     configs:
