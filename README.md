@@ -1,7 +1,7 @@
 # Wazuh + TheHive ---- Incident-Routing
 This integration between TheHive and Wazuh enhances incident management by automatically routing alerts based on severity.  This integration helps security teams prioritize and manage incidents efficiently.
 
-Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case threshold are promoted to a linked case.
+Uses TheHive's public **API v1** (TheHive 5.x and 6.x). Alerts above the case threshold are promoted to a linked case. Tested on TheHive 6.0 and Wazuh 4.14.
 
 > Still on the deprecated API v0 / `thehive4py` 1.8.2? Use release [v1.0.0](https://github.com/dzidulajubilee/Incident_Routing/releases/tag/v1.0.0).
 
@@ -81,6 +81,19 @@ chown root:wazuh /var/ossec/integrations/custom-w2thive.py
 
 ```
 
+# STEP 4b - Create the TheHive user and API key
+
+The default `admin@thehive.local` account belongs to the admin organisation and cannot receive alerts. As admin, create an organisation and an analyst user for Wazuh, then generate its API key (UI: *Organisations > Add*, then *Users > Add* with profile `analyst`, then *Create API key*). Or with the API:
+
+```
+H="https://thehive.example.com"; A="admin@thehive.local:<admin password>"
+curl -sk -u "$A" -H 'Content-Type: application/json' -X POST $H/api/v1/organisation -d '{"name":"SOC","description":"Wazuh alerts"}'
+curl -sk -u "$A" -H 'Content-Type: application/json' -X POST $H/api/v1/user -d '{"login":"wazuh@thehive.local","name":"Wazuh integration","profile":"analyst","organisation":"SOC"}'
+curl -sk -u "$A" -X POST $H/api/v1/user/wazuh@thehive.local/key/renew      # prints the API key
+```
+
+Alerts are then visible to users of that organisation, not to the admin account.
+
 # STEP5 - Final integration step - enabling the integration in the Wazuh manager configuration file  <br>
 
 Modify `/var/ossec/etc/ossec.conf` and insert the below code. You will need to insert the IP address for your The Hive server inside the `<hook_url>` tags as well as insert your API key inside the `<api_key>` tags. Use an API key of a TheHive user with the `analyst` profile (needs `manageAlert` and `manageCase`). To give new cases a specific status, set `case_status` at the top of `custom-w2thive.py` (for example `'InProgress'` or a custom status); leave it as `None` to use TheHive's default. For HTTPS with a self-signed certificate, set `verify_tls` at the top of `custom-w2thive.py` to your CA bundle path. 
@@ -90,17 +103,28 @@ Place Below the Global Tag
 ```
   <integration>
     <name>custom-w2thive</name>
-    <hook_url>http://0.0.0.0:9000</hook_url>
+    <hook_url>https://thehive.example.com</hook_url>
     <api_key>00000000000000000000000</api_key>
     <alert_format>json</alert_format>
   </integration>
 ```
 
+`<hook_url>` is the base URL of TheHive: `https://<host>` behind nginx, or `http://<host>:9000` when TheHive is reached directly. Every Wazuh alert is forwarded; to send fewer, add a minimum level inside the block, for example `<level>5</level>`.
+
 Once complete, you need to restart Wazuh Manager:
 
 `sudo systemctl restart wazuh-manager`
 
-You should see alerts being generated under the `Alerts` and `Cases` being created in the respective tab in TheHive Instance.
+You should see alerts being generated under the `Alerts` and `Cases` being created in the respective tab in TheHive Instance. New alerts get status `New`; alerts at or above `case_lvl_threshold` (11) are turned into a case (status `New`) and the alert becomes `Imported`.
+
+To test without waiting for a real alert, run the integration by hand with a sample alert file as the `wazuh` user:
+
+```
+sudo -u wazuh /var/ossec/integrations/custom-w2thive /path/to/sample-alert.json <api_key> https://thehive.example.com
+grep custom-w2thive /var/ossec/logs/integrations.log | tail
+```
+
+Errors (wrong key, certificate problems, unreachable TheHive) are written to `/var/ossec/logs/integrations.log`.
 
 ***REFERENCES***<br>
 [Using Wazuh and TheHive for threat protection and incident response](https://wazuh.com/blog/using-wazuh-and-thehive-for-threat-protection-and-incident-response/) <br>
